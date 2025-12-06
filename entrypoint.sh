@@ -13,6 +13,7 @@ mkdir -p "$CONFIG_DIR"
 echo "Checking configuration files..."
 if [ -d "$DEFAULTS_DIR" ]; then
     for file in "$DEFAULTS_DIR"/*; do
+        [ -e "$file" ] || continue
         filename=$(basename "$file")
         target="$CONFIG_DIR/$filename"
         

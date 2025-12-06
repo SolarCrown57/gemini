@@ -33,8 +33,7 @@ COPY . .
 
 # Create a directory for default configs to support volume initialization
 # We copy the local config folder to a defaults location
-RUN mkdir -p /app/config_defaults && \
-    cp -r config/* /app/config_defaults/ || true
+COPY config/ /app/config_defaults/
 
 # Copy and setup entrypoint script
 COPY entrypoint.sh /app/entrypoint.sh
