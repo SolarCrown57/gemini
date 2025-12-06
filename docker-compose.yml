@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  vertex-proxy:
+    build: .
+    container_name: vertex-proxy
+    restart: unless-stopped
+    ports:
+      - "28880:28880"
+      - "28881:28881"
+    volumes:
+      # Persist the config directory
+      - ./data/config:/app/config
+    environment:
+      - TZ=Asia/Shanghai

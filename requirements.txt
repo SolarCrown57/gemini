@@ -1,0 +1,9 @@
+# 核心依赖
+fastapi
+uvicorn
+httpx
+websockets
+pydantic
+
+# headless 模式（可选）
+playwright
