@@ -1,5 +1,6 @@
 """Vertex AI Proxy 入口"""
 import asyncio
+import time
 import uvicorn
 import websockets
 
@@ -181,8 +182,37 @@ async def start_headless_mode(config: dict) -> None:
     print("✅ 无头模式已就绪 (按需刷新)")
     
     # 保持浏览器运行
+    restart_interval = headless_config.get("restart_interval", 21600)
+    last_restart_time = time.time()
+
     try:
         while browser.is_running:
+            # 检查是否需要定时重启
+            if time.time() - last_restart_time > restart_interval:
+                print(f"♻️ 计划内重启浏览器 (每 {restart_interval} 秒)...")
+                
+                # 关闭浏览器
+                await browser.close()
+                await asyncio.sleep(2)
+                
+                # 重新启动
+                if not await browser.start(headless=not show_browser):
+                    print("❌ 重启浏览器失败")
+                    break
+                    
+                # 重新配置
+                await browser.setup_request_interception(harvester.handle_request)
+                
+                if not await browser.navigate_to_vertex():
+                    print("❌ 重启后导航失败")
+                    await browser.close()
+                    break
+                
+                print("🔄 重启后刷新凭证...")
+                await browser.send_test_message()
+                last_restart_time = time.time()
+                print("✅ 浏览器重启完成")
+
             await asyncio.sleep(1)
     finally:
         await browser.close()
@@ -209,7 +239,7 @@ async def main():
         request_token_refresh_callback=refresh_callback
     )
     
-    app = create_app(vertex_client, stats_manager)
+    app = create_app(vertex_client, stats_manager, api_key=config.get("api_key"))
     
     if config.get("enable_sd_api", False):
         try:

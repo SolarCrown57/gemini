@@ -55,9 +55,24 @@ def load_config() -> Dict[str, Any]:
         "headless": {
             "browser": "playwright",
             "auto_refresh_interval": 180,
-            "show_browser": False
+            "show_browser": False,
+            "restart_interval": 21600  # 默认 6 小时重启一次
         }
     }
+
+    # 处理环境变量覆盖 restart_interval
+    restart_interval = os.getenv("BROWSER_RESTART_INTERVAL")
+    if restart_interval:
+        try:
+            default_config["headless"]["restart_interval"] = int(restart_interval)
+        except ValueError:
+            print(f"⚠️ 环境变量 BROWSER_RESTART_INTERVAL 格式错误，使用默认值")
+
+    # 优先读取环境变量中的 API_KEY
+    api_key = os.getenv("API_KEY")
+    if api_key:
+        default_config["api_key"] = api_key
+
     if not os.path.exists(CONFIG_FILE):
         return default_config
     try:
@@ -67,6 +82,11 @@ def load_config() -> Dict[str, Any]:
                 default_config["headless"].update(config["headless"])
                 del config["headless"]
             default_config.update(config)
+            
+            # 再次确保环境变量优先级最高
+            if api_key:
+                default_config["api_key"] = api_key
+                
             return default_config
     except Exception as e:
         print(f"⚠️ 加载配置失败: {e}")

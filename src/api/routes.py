@@ -4,11 +4,12 @@ import asyncio
 import json
 import time
 import uuid
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Security, Depends, status
 from fastapi.responses import StreamingResponse, Response
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.core import MODELS_CONFIG_FILE, TokenStatsManager
 from src.api.vertex_client import VertexAIClient
@@ -33,9 +34,23 @@ class ConnectionCompatibilityMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def create_app(vertex_client: VertexAIClient, stats_manager: TokenStatsManager) -> FastAPI:
+def create_app(vertex_client: VertexAIClient, stats_manager: TokenStatsManager, api_key: Optional[str] = None) -> FastAPI:
     """创建FastAPI应用"""
-    app = FastAPI()
+    dependencies = []
+    if api_key:
+        security = HTTPBearer()
+
+        async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
+            if credentials.credentials != api_key:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API Key",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return credentials.credentials
+        dependencies.append(Depends(verify_api_key))
+
+    app = FastAPI(dependencies=dependencies)
     
     # 添加连接兼容性中间件
     app.add_middleware(ConnectionCompatibilityMiddleware)

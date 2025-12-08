@@ -13,3 +13,8 @@ services:
       - ./data/config:/app/config
     environment:
       - TZ=Asia/Shanghai
+      - API_KEY=
+    deploy:
+      resources:
+        limits:
+          memory: 4G
