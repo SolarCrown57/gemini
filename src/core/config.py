@@ -68,6 +68,11 @@ def load_config() -> Dict[str, Any]:
         except ValueError:
             print(f"⚠️ 环境变量 BROWSER_RESTART_INTERVAL 格式错误，使用默认值")
 
+    # 处理环境变量覆盖 enable_gui
+    enable_gui_env = os.getenv("ENABLE_GUI")
+    if enable_gui_env is not None:
+        default_config["enable_gui"] = enable_gui_env.lower() in ('true', '1', 't')
+
     # 优先读取环境变量中的 API_KEY
     api_key = os.getenv("API_KEY")
     if api_key:
@@ -86,6 +91,9 @@ def load_config() -> Dict[str, Any]:
             # 再次确保环境变量优先级最高
             if api_key:
                 default_config["api_key"] = api_key
+            
+            if enable_gui_env is not None:
+                default_config["enable_gui"] = enable_gui_env.lower() in ('true', '1', 't')
                 
             return default_config
     except Exception as e:

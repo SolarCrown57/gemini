@@ -4,6 +4,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    ENABLE_GUI=false \
     # Prevent Playwright from complaining about root user
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
@@ -17,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     gcc \
     curl \
+    dos2unix \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -37,7 +40,7 @@ COPY config/ /app/config_defaults/
 
 # Copy and setup entrypoint script
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Expose the API and WebSocket ports
 EXPOSE 28880 28881
