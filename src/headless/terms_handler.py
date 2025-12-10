@@ -64,6 +64,7 @@ class TermsHandler:
         self.page = page
         self._observer_active = False
         self._terms_detected_event = asyncio.Event()
+        self._monitor_task: Optional[asyncio.Task] = None
     
     def set_page(self, page: "Page") -> None:
         """设置页面对象"""
@@ -324,6 +325,9 @@ class TermsHandler:
         if not self.page:
             return
         
+        # 停止旧的任务（如果存在）
+        await self.stop_monitoring()
+        
         # 设置优化的 MutationObserver
         await self.setup_observer_fast()
         
@@ -347,14 +351,29 @@ class TermsHandler:
                         has_terms = await self.check_terms_present()
                         if has_terms:
                             await self.accept_terms_if_present()
+                    except asyncio.CancelledError:
+                        break
                             
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
                     print(f"⚠️ 条款监控出错: {e}")
                     await asyncio.sleep(0.5)
         
         # 在后台运行监控任务
-        asyncio.create_task(monitor_loop())
+        self._monitor_task = asyncio.create_task(monitor_loop())
         print("🔄 条款监控任务已启动 (优化版)")
+        
+    async def stop_monitoring(self) -> None:
+        """停止条款监控任务"""
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._monitor_task = None
+            print("⏹️ 条款监控任务已停止")
     
     async def parallel_handler(self, max_attempts: int = 30) -> bool:
         """

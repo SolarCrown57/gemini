@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import gc
 from typing import Optional, Callable
 from pathlib import Path
 
@@ -431,19 +432,41 @@ class HeadlessBrowser:
             return False
     
     async def close(self) -> None:
-        """关闭浏览器"""
+        """关闭浏览器 - 增强清理版"""
         self._is_running = False
         
+        print("🔒 正在关闭浏览器资源...")
+        
+        # 1. 停止条款监控任务
+        if self._terms_handler:
+            try:
+                await self._terms_handler.stop_monitoring()
+            except Exception as e:
+                print(f"   ⚠️ 停止条款监控失败: {e}")
+
+        # 2. 关闭上下文和页面
         if self.context:
-            await self.context.close()
-            self.context = None
-            self.page = None
+            try:
+                await self.context.close()
+            except Exception as e:
+                print(f"   ⚠️ 关闭上下文失败: {e}")
+            finally:
+                self.context = None
+                self.page = None
         
+        # 3. 停止 Playwright 实例
         if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None
+            try:
+                await self.playwright.stop()
+            except Exception as e:
+                print(f"   ⚠️ 停止 Playwright 失败: {e}")
+            finally:
+                self.playwright = None
         
-        print("🔒 浏览器已关闭")
+        # 4. 强制垃圾回收
+        gc.collect()
+        
+        print("🔒 浏览器已完全关闭")
     
     @property
     def is_running(self) -> bool:
