@@ -36,6 +36,30 @@ async def headless_token_refresh() -> None:
     """无头模式凭证刷新，连续失败时重定向到 Vertex AI Studio"""
     global _headless_browser, _refresh_fail_count
     
+    # 自动唤醒: 如果浏览器未运行，尝试启动
+    if not _headless_browser or not _headless_browser.is_running:
+        print("💤 无头模式: 浏览器处于休眠状态，正在唤醒...")
+        # 重新启动无头模式任务
+        # 注意: start_headless_mode 是一个长期运行的任务，我们需要在后台启动它
+        # 并且我们需要等待它准备好
+        
+        # 确保配置已加载
+        config = load_config()
+        if config.get("credential_mode") == "headless":
+            asyncio.create_task(start_headless_mode(config))
+            
+            # 等待浏览器启动并就绪 (最多30秒)
+            print("⏳ 等待浏览器启动...")
+            for _ in range(30):
+                await asyncio.sleep(1)
+                if _headless_browser and _headless_browser.is_running:
+                    print("✅ 浏览器已唤醒")
+                    break
+            else:
+                print("❌ 浏览器唤醒超时")
+                cred_manager.mark_refresh_failed()
+                return
+
     if _headless_browser and _headless_browser.is_running:
         print("🔄 无头模式: 按需刷新凭证...")
         
@@ -182,14 +206,25 @@ async def start_headless_mode(config: dict) -> None:
     print("✅ 无头模式已就绪 (按需刷新)")
     
     # 保持浏览器运行
-    restart_interval = headless_config.get("restart_interval", 21600)
-    last_restart_time = time.time()
+    # restart_interval 已废弃
+    idle_timeout = headless_config.get("idle_timeout", 600)
+    
+    browser.update_activity() # 初始化活动时间
 
     try:
         while browser.is_running:
-            # 检查是否需要定时重启
-            if time.time() - last_restart_time > restart_interval:
-                print(f"♻️ 计划内重启浏览器 (每 {restart_interval} 秒)...")
+            current_time = time.time()
+            
+            # 1. 检查空闲超时
+            if idle_timeout > 0 and current_time - browser.last_request_time > idle_timeout:
+                print(f"💤 浏览器空闲超时 ({idle_timeout}秒)，关闭浏览器...")
+                await browser.close()
+                _headless_browser = None
+                break
+            
+            # 2. 检查连续错误
+            if browser.consecutive_error_count >= 10:
+                print(f"♻️ 连续错误重启 ({browser.consecutive_error_count} 次错误)...")
                 
                 # 关闭浏览器
                 await browser.close()
@@ -210,13 +245,16 @@ async def start_headless_mode(config: dict) -> None:
                 
                 print("🔄 重启后刷新凭证...")
                 await browser.send_test_message()
-                last_restart_time = time.time()
+                
+                browser.update_activity() # 重置状态
+                browser.record_success()  # 重置错误计数
                 print("✅ 浏览器重启完成")
 
             await asyncio.sleep(1)
     finally:
-        await browser.close()
-        _headless_browser = None
+        if _headless_browser:
+            await browser.close()
+            _headless_browser = None
 
 
 async def main():
@@ -233,10 +271,26 @@ async def main():
     else:
         refresh_callback = request_token_refresh
     
+    # 定义回调函数
+    def on_activity():
+        if _headless_browser:
+            _headless_browser.update_activity()
+            
+    def on_error(error_type):
+        if _headless_browser and error_type == "Resource has been exhausted":
+            _headless_browser.record_error()
+            
+    def on_success():
+        if _headless_browser:
+            _headless_browser.record_success()
+
     vertex_client = VertexAIClient(
         cred_manager=cred_manager,
         stats_manager=stats_manager,
-        request_token_refresh_callback=refresh_callback
+        request_token_refresh_callback=refresh_callback,
+        on_activity=on_activity,
+        on_error=on_error,
+        on_success=on_success
     )
     
     app = create_app(vertex_client, stats_manager, api_key=config.get("api_key"))

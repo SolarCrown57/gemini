@@ -35,6 +35,10 @@ class HeadlessBrowser:
         self.page: Optional[Page] = None
         self._is_running = False
         
+        # 活动状态追踪
+        self.last_request_time = 0
+        self.consecutive_error_count = 0
+        
         # 使用组合模式集成功能模块
         self._stealth_config = StealthConfig()
         self._terms_handler = TermsHandler()
@@ -444,6 +448,20 @@ class HeadlessBrowser:
     @property
     def is_running(self) -> bool:
         return self._is_running
+    
+    def update_activity(self):
+        """更新最后活动时间"""
+        import time
+        self.last_request_time = time.time()
+
+    def record_success(self):
+        """记录成功请求（重置连续错误计数）"""
+        self.consecutive_error_count = 0
+
+    def record_error(self):
+        """记录错误（用于连续错误重启检测）"""
+        self.consecutive_error_count += 1
+        print(f"⚠️ 连续错误计数: {self.consecutive_error_count}")
     
     # ========== 向后兼容的属性和方法 ==========
     

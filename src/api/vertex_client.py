@@ -28,10 +28,16 @@ class VertexAIClient:
     """Vertex AI API客户端"""
     
     def __init__(self, cred_manager: CredentialManager, stats_manager: TokenStatsManager,
-                 request_token_refresh_callback=None):
+                 request_token_refresh_callback=None,
+                 on_activity=None,
+                 on_error=None,
+                 on_success=None):
         self.cred_manager = cred_manager
         self.stats_manager = stats_manager
         self.request_token_refresh = request_token_refresh_callback
+        self.on_activity = on_activity
+        self.on_error = on_error
+        self.on_success = on_success
         
         # 优化连接池配置，提升兼容性
         limits = httpx.Limits(
@@ -182,6 +188,10 @@ class VertexAIClient:
         isolated_client = self._create_isolated_client()
         
         try:
+            # 记录活动
+            if self.on_activity:
+                self.on_activity()
+                
             for attempt in range(max_retries + 1):
                 stream_processor = get_stream_processor()
                 stream_processor.enable_debug(True)
@@ -539,10 +549,20 @@ class VertexAIClient:
                                 continue
                             
                             # If we get here, it's a fatal error or retry failed
-                            error_payload = {"error": {"message": f"Upstream Error: {response.status_code} - {error_text.decode()}", "type": "upstream_error"}}
+                            error_msg = error_text.decode()
+                            if "Resource has been exhausted" in error_msg:
+                                print("⚠️ 检测到 Resource has been exhausted (HTTP Error)")
+                                if self.on_error:
+                                    self.on_error("Resource has been exhausted")
+
+                            error_payload = {"error": {"message": f"Upstream Error: {response.status_code} - {error_msg}", "type": "upstream_error"}}
                             yield f"data: {json.dumps(error_payload)}\n\n"
                             return
 
+                        # 检查是否有 "Resource has been exhausted" 错误 (从响应文本中)
+                        # 注意：这里我们已经读取了 error_text (如果状态码不是 200)，或者正在处理流
+                        # 如果是流，我们需要在处理过程中检测
+                        
                         # Layer 1: 使用ChunkAggregator稳定输入流
                         # v5.0: 增加min_chunk_size以确保JSON边界稳定性
                         aggregator = ChunkAggregator(min_chunk_size=256, max_buffer_time=0.1)
@@ -554,7 +574,15 @@ class VertexAIClient:
                         stream_error = None  # v8.1: 追踪流处理中的错误
                         
                         try:
+                            has_exhaustion_error = False
                             async for sse_event in stream_processor.process_stream(stabilized_stream, model=model):
+                                # 检查是否有资源耗尽错误
+                                if 'Resource has been exhausted' in sse_event:
+                                    print("⚠️ 检测到 Resource has been exhausted")
+                                    has_exhaustion_error = True
+                                    if self.on_error:
+                                        self.on_error("Resource has been exhausted")
+                                        
                                 chunk_count += 1
                                 # 统计completion字符数用于token估算
                                 if 'data: ' in sse_event and '"content"' in sse_event:
@@ -656,6 +684,10 @@ class VertexAIClient:
                         else:
                             print(f"✅ {chunk_count} 块 | {prompt_tokens}+{completion_tokens}={prompt_tokens+completion_tokens} token")
                         
+                        # 成功完成，调用 on_success
+                        if self.on_success and not has_exhaustion_error:
+                            self.on_success()
+
                         # 如果成功处理完流，跳出重试循环
                         break
 

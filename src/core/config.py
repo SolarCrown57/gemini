@@ -56,11 +56,20 @@ def load_config() -> Dict[str, Any]:
             "browser": "playwright",
             "auto_refresh_interval": 180,
             "show_browser": False,
-            "restart_interval": 21600  # 默认 6 小时重启一次
+            "idle_timeout": 600,  # 默认 10 分钟无请求自动关闭
+            "restart_interval": 0   # 设为 0 禁用定时重启，由 idle_timeout 接管
         }
     }
 
-    # 处理环境变量覆盖 restart_interval
+    # 处理环境变量覆盖 idle_timeout
+    idle_timeout = os.getenv("BROWSER_IDLE_TIMEOUT")
+    if idle_timeout:
+        try:
+            default_config["headless"]["idle_timeout"] = int(idle_timeout)
+        except ValueError:
+            print(f"⚠️ 环境变量 BROWSER_IDLE_TIMEOUT 格式错误，使用默认值")
+
+    # 处理环境变量覆盖 restart_interval (保持向后兼容)
     restart_interval = os.getenv("BROWSER_RESTART_INTERVAL")
     if restart_interval:
         try:
