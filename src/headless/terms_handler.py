@@ -331,26 +331,46 @@ class TermsHandler:
         # 设置优化的 MutationObserver
         await self.setup_observer_fast()
         
-        async def monitor_loop():
+        # 使用弱引用避免循环引用
+        # monitor_loop 闭包引用了 self，而 self._monitor_task 引用了 monitor_loop
+        # 这创建了一个引用循环: self -> _monitor_task -> monitor_loop -> self
+        # 虽然 Python 的 GC 通常可以处理这个，但在某些异步场景下（特别是任务被取消时）可能会有问题
+        # 更重要的是 is_running_check 回调通常来自 Browser 实例，这可能导致更大的循环：
+        # Browser -> TermsHandler -> _monitor_task -> monitor_loop -> is_running_check -> Browser
+        
+        async def monitor_loop(handler_ref, running_check):
             # 首次立即检查
-            await self.accept_terms_if_present()
+            handler = handler_ref
+            if handler:
+                await handler.accept_terms_if_present()
             
-            while is_running_check is None or is_running_check():
+            while True:
+                # 检查引用有效性
+                if not handler:
+                    break
+                    
+                # 检查运行状态
+                if running_check and not running_check():
+                    break
+                    
                 try:
                     # 等待事件或超时（缩短超时时间）
                     try:
+                        if not handler._terms_detected_event:
+                            break
+                            
                         await asyncio.wait_for(
-                            self._terms_detected_event.wait(),
+                            handler._terms_detected_event.wait(),
                             timeout=check_interval
                         )
                         # 事件触发，立即处理条款
-                        self._terms_detected_event.clear()
-                        await self.accept_terms_if_present()
+                        handler._terms_detected_event.clear()
+                        await handler.accept_terms_if_present()
                     except asyncio.TimeoutError:
                         # 超时后进行一次快速主动检查
-                        has_terms = await self.check_terms_present()
+                        has_terms = await handler.check_terms_present()
                         if has_terms:
-                            await self.accept_terms_if_present()
+                            await handler.accept_terms_if_present()
                     except asyncio.CancelledError:
                         break
                             
@@ -361,17 +381,19 @@ class TermsHandler:
                     await asyncio.sleep(0.5)
         
         # 在后台运行监控任务
-        self._monitor_task = asyncio.create_task(monitor_loop())
+        # 我们在这里不传递 self，而是传递明确的参数
+        self._monitor_task = asyncio.create_task(monitor_loop(self, is_running_check))
         print("🔄 条款监控任务已启动 (优化版)")
         
     async def stop_monitoring(self) -> None:
         """停止条款监控任务"""
-        if self._monitor_task and not self._monitor_task.done():
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
+        if self._monitor_task:
+            if not self._monitor_task.done():
+                self._monitor_task.cancel()
+                try:
+                    await self._monitor_task
+                except asyncio.CancelledError:
+                    pass
             self._monitor_task = None
             print("⏹️ 条款监控任务已停止")
     
