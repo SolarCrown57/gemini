@@ -66,7 +66,7 @@ class TermsHandler:
         self._terms_detected_event = asyncio.Event()
         self._monitor_task: Optional[asyncio.Task] = None
     
-    def set_page(self, page: "Page") -> None:
+    def set_page(self, page: Optional["Page"]) -> None:
         """设置页面对象"""
         self.page = page
         self._observer_active = False

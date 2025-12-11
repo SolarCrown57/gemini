@@ -441,6 +441,8 @@ class HeadlessBrowser:
         if self._terms_handler:
             try:
                 await self._terms_handler.stop_monitoring()
+                # 清理 TermsHandler 中的页面引用
+                self._terms_handler.set_page(None)
             except Exception as e:
                 print(f"   ⚠️ 停止条款监控失败: {e}")
 
