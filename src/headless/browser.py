@@ -210,9 +210,18 @@ class HeadlessBrowser:
         Args:
             check_interval: 备用定时检查间隔（秒），默认1秒
         """
+        # 使用 weakref 避免 lambda 捕获 self 造成的循环引用
+        # Browser -> TermsHandler -> Task -> Lambda -> Browser
+        import weakref
+        weak_self = weakref.ref(self)
+        
+        def check_running():
+            browser = weak_self()
+            return browser is not None and browser.is_running
+            
         await self._terms_handler.start_monitoring(
             check_interval=check_interval,
-            is_running_check=lambda: self._is_running
+            is_running_check=check_running
         )
     
     async def check_and_accept_terms(self) -> bool:

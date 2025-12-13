@@ -86,7 +86,16 @@ class CredentialHarvester:
         """
         url = request.url
         
+        # DEBUG: Check if we are seeing requests (Case Insensitive)
+        if "batchgraphql" in url.lower() or "streamgeneratecontent" in url.lower():
+             print(f"🔍 DEBUG: Harvester saw potential target: {url[:60]}...")
+        
         if not self.is_target_request(url):
+            # DIAGNOSTIC: Check for case sensitivity issues
+            lower_url = url.lower()
+            for pattern in self.TARGET_PATTERNS:
+                if pattern.lower() in lower_url and pattern not in url:
+                    print(f"🚨 DIAGNOSIS: URL ignored due to case mismatch! Pattern '{pattern}' not in '{url}'")
             return
         
         try:
@@ -118,10 +127,22 @@ class CredentialHarvester:
             # 关键修复：只捕获实际的生成内容请求，忽略UI状态请求
             # 参考油猴脚本的过滤逻辑
             CONTENT_KEYWORDS = ['StreamGenerateContent', 'generateContent', 'Predict', 'Image']
-            is_content_request = any(kw in post_data_str for kw in CONTENT_KEYWORDS)
+            has_keyword = any(kw in post_data_str for kw in CONTENT_KEYWORDS)
             
-            if not is_content_request:
+            # 增强逻辑：支持 REST 风格的请求 (方法名在 URL 中，Body 中包含 contents)
+            # 必须严格检查 Body 结构，避免捕获无效请求
+            is_valid_rest_request = False
+            if not has_keyword and ("generatecontent" in url.lower() or "predict" in url.lower()):
+                if body and isinstance(body, dict):
+                    # 检查是否存在生成请求的核心字段
+                    if "contents" in body or "instances" in body:
+                        is_valid_rest_request = True
+                        print(f"ℹ️ 识别到 REST 风格生成请求: {url[:50]}...")
+
+            if not (has_keyword or is_valid_rest_request):
                 # 这是UI状态请求，不捕获
+                # 仅在调试模式下打印，避免日志刷屏
+                # print(f"⚠️ Harvester忽略请求 (无内容关键字): {url[:50]}... Body len: {len(post_data_str)}")
                 return
             
             # 创建凭证对象
