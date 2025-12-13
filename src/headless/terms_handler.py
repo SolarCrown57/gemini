@@ -66,11 +66,33 @@ class TermsHandler:
         self._observer_active = False
         self._terms_detected_event = asyncio.Event()
         self._monitor_task: Optional[asyncio.Task] = None
+        self._console_listener_registered = False
     
     def set_page(self, page: Optional["Page"]) -> None:
         """设置页面对象"""
         self.page = page
         self._observer_active = False
+        self._console_listener_registered = False
+    
+    def _setup_console_listener(self) -> None:
+        """
+        设置 console 消息监听器，用于接收 JS 发送的条款检测通知
+        """
+        if not self.page or self._console_listener_registered:
+            return
+        
+        def on_console_message(msg):
+            """处理 console 消息"""
+            text = msg.text
+            if '[TERMS_DETECTED]' in text:
+                # 条款对话框被检测到，设置事件
+                self._terms_detected_event.set()
+        
+        try:
+            self.page.on("console", on_console_message)
+            self._console_listener_registered = True
+        except Exception as e:
+            print(f"⚠️ 设置 console 监听器失败: {e}")
     
     async def setup_observer(self) -> None:
         """
@@ -82,12 +104,16 @@ class TermsHandler:
         """
         设置快速响应的 MutationObserver 监听条款对话框
         
-        优化：移除限流，直接响应DOM变化
+        优化：移除限流，直接响应DOM变化，通过 console.log 通知 Python
         """
         if not self.page or self._observer_active:
             return
         
         try:
+            # 先注册 console 事件监听器（用于接收 JS 通知）
+            if not self._console_listener_registered:
+                self._setup_console_listener()
+            
             # 注入优化的 MutationObserver 脚本
             await self.page.evaluate('''() => {
                 // 避免重复设置
@@ -118,10 +144,8 @@ class TermsHandler:
                         const elements = document.querySelectorAll(selector);
                         for (const el of elements) {
                             if (isTermsDialog(el) && el.offsetParent !== null) {
-                                // 找到可见的条款对话框，立即触发自定义事件
-                                window.dispatchEvent(new CustomEvent('termsDialogDetected', {
-                                    detail: { element: el }
-                                }));
+                                // 找到可见的条款对话框，通过 console.log 通知 Python
+                                console.log('[TERMS_DETECTED]');
                                 return true;
                             }
                         }
@@ -340,7 +364,10 @@ class TermsHandler:
         # Browser -> TermsHandler -> _monitor_task -> monitor_loop -> is_running_check -> Browser
         weak_self = weakref.ref(self)
         
-        async def monitor_loop(handler_weak_ref, running_check):
+        # 保存事件对象的引用，避免在循环中重复获取
+        terms_event = self._terms_detected_event
+        
+        async def monitor_loop(handler_weak_ref, running_check, event):
             # 首次立即检查
             handler = handler_weak_ref()
             if handler:
@@ -352,21 +379,15 @@ class TermsHandler:
                 del handler
             
             while True:
-                # 每次循环开始时获取弱引用
-                handler = handler_weak_ref()
-                
-                # 检查引用有效性（对象已被回收则退出）
-                if handler is None:
-                    break
-                    
-                # 检查运行状态
+                # 检查运行状态（使用传入的回调，不需要获取 handler）
                 if running_check and not running_check():
                     break
                 
-                # 获取事件对象（不持有handler强引用）
-                event = handler._terms_detected_event
-                
-                # 显式释放handler引用，允许在await期间GC回收
+                # 检查弱引用是否还有效（对象已被回收则退出）
+                handler = handler_weak_ref()
+                if handler is None:
+                    break
+                # 立即释放，只是检查有效性
                 del handler
                 
                 try:
@@ -420,8 +441,10 @@ class TermsHandler:
                     await asyncio.sleep(0.5)
         
         # 在后台运行监控任务
-        # 传递弱引用而非强引用，打破循环引用链
-        self._monitor_task = asyncio.create_task(monitor_loop(weak_self, is_running_check))
+        # 传递弱引用和事件对象，打破循环引用链
+        self._monitor_task = asyncio.create_task(
+            monitor_loop(weak_self, is_running_check, terms_event)
+        )
         print("🔄 条款监控任务已启动 (优化版)")
         
     async def stop_monitoring(self) -> None:
@@ -435,6 +458,9 @@ class TermsHandler:
                     pass
             self._monitor_task = None
             print("⏹️ 条款监控任务已停止")
+        
+        # 重置 observer 状态，以便下次可以重新设置
+        self._observer_active = False
     
     async def parallel_handler(self, max_attempts: int = 30) -> bool:
         """
