@@ -6,6 +6,7 @@ import time
 import uuid
 import re
 import httpx
+import ssl
 from typing import Dict, Any, Optional, List, AsyncGenerator
 
 from src.core import TokenStatsManager, CredentialManager, MODELS_CONFIG_FILE
@@ -45,25 +46,30 @@ class VertexAIClient:
         self.on_success = on_success
 
         # 优化连接池配置，提升兼容性
-        limits = httpx.Limits(
+        self.limits = httpx.Limits(
             max_keepalive_connections=20,
             max_connections=100,
             keepalive_expiry=60.0,  # 延长 keepalive 过期时间
         )
-        # 使用统一的高性能客户端配置
-        # 整合了之前 _create_isolated_client 的优化配置
-        self.client = httpx.AsyncClient(
+
+        # 创建共享的 SSL 上下文，避免每个请求都重新加载证书
+        # 这解决了创建大量客户端时的内存泄漏和 CPU 消耗问题
+        self.ssl_context = ssl.create_default_context()
+
+    def _create_isolated_client(self) -> httpx.AsyncClient:
+        """创建隔离的客户端实例"""
+        return httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=30.0,
                 read=180.0,  # 增加读取超时以支持长响应
                 write=30.0,
                 pool=30.0,
             ),
-            limits=limits,
+            limits=self.limits,
             follow_redirects=True,  # 启用重定向跟随
             http1=True,  # 启用 HTTP/1.1 支持
             http2=True,  # 同时启用 HTTP/2 支持
-            verify=True,
+            verify=self.ssl_context,
         )
 
     async def complete_chat(
@@ -561,11 +567,12 @@ class VertexAIClient:
             else:
                 print(f"↻ 重试({attempt+1})")
             try:
-                # 使用共享客户端进行流式请求
-                async with self.client.stream(
-                    "POST", url, headers=headers, json=new_body
-                ) as response:
-                    print(f"📡 Response Status: {response.status_code}")
+                # 创建新的隔离客户端
+                async with self._create_isolated_client() as client:
+                    async with client.stream(
+                        "POST", url, headers=headers, json=new_body
+                    ) as response:
+                        print(f"📡 Response Status: {response.status_code}")
 
                     if response.status_code != 200:
                         error_text = await response.aread()
