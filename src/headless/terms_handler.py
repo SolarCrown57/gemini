@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import weakref
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -334,19 +335,23 @@ class TermsHandler:
         # 使用弱引用避免循环引用
         # monitor_loop 闭包引用了 self，而 self._monitor_task 引用了 monitor_loop
         # 这创建了一个引用循环: self -> _monitor_task -> monitor_loop -> self
-        # 虽然 Python 的 GC 通常可以处理这个，但在某些异步场景下（特别是任务被取消时）可能会有问题
+        # 使用 weakref.ref 打破循环：当 TermsHandler 没有其他强引用时可以被 GC 回收
         # 更重要的是 is_running_check 回调通常来自 Browser 实例，这可能导致更大的循环：
         # Browser -> TermsHandler -> _monitor_task -> monitor_loop -> is_running_check -> Browser
+        weak_self = weakref.ref(self)
         
-        async def monitor_loop(handler_ref, running_check):
+        async def monitor_loop(handler_weak_ref, running_check):
             # 首次立即检查
-            handler = handler_ref
+            handler = handler_weak_ref()
             if handler:
                 await handler.accept_terms_if_present()
             
             while True:
-                # 检查引用有效性
-                if not handler:
+                # 每次循环开始时解引用弱引用
+                handler = handler_weak_ref()
+                
+                # 检查引用有效性（对象已被回收则退出）
+                if handler is None:
                     break
                     
                 # 检查运行状态
@@ -363,11 +368,17 @@ class TermsHandler:
                             handler._terms_detected_event.wait(),
                             timeout=check_interval
                         )
-                        # 事件触发，立即处理条款
+                        # 事件触发，重新获取引用并处理条款
+                        handler = handler_weak_ref()
+                        if handler is None:
+                            break
                         handler._terms_detected_event.clear()
                         await handler.accept_terms_if_present()
                     except asyncio.TimeoutError:
                         # 超时后进行一次快速主动检查
+                        handler = handler_weak_ref()
+                        if handler is None:
+                            break
                         has_terms = await handler.check_terms_present()
                         if has_terms:
                             await handler.accept_terms_if_present()
@@ -381,8 +392,8 @@ class TermsHandler:
                     await asyncio.sleep(0.5)
         
         # 在后台运行监控任务
-        # 我们在这里不传递 self，而是传递明确的参数
-        self._monitor_task = asyncio.create_task(monitor_loop(self, is_running_check))
+        # 传递弱引用而非强引用，打破循环引用链
+        self._monitor_task = asyncio.create_task(monitor_loop(weak_self, is_running_check))
         print("🔄 条款监控任务已启动 (优化版)")
         
     async def stop_monitoring(self) -> None:
