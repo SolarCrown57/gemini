@@ -81,12 +81,25 @@ class TermsHandler:
         if not self.page or self._console_listener_registered:
             return
         
+        # 使用弱引用避免 Page -> listener -> TermsHandler -> Page 的循环引用
+        weak_self = weakref.ref(self)
+        
         def on_console_message(msg):
             """处理 console 消息"""
-            text = msg.text
-            if '[TERMS_DETECTED]' in text:
-                # 条款对话框被检测到，设置事件
-                self._terms_detected_event.set()
+            handler = weak_self()
+            if not handler:
+                return
+                
+            try:
+                text = msg.text
+                if '[TERMS_DETECTED]' in text:
+                    # 条款对话框被检测到，设置事件
+                    handler._terms_detected_event.set()
+            except Exception:
+                pass
+            finally:
+                # 释放局部引用
+                del handler
         
         try:
             self.page.on("console", on_console_message)
@@ -115,64 +128,95 @@ class TermsHandler:
                 self._setup_console_listener()
             
             # 注入优化的 MutationObserver 脚本
-            await self.page.evaluate('''() => {
-                // 避免重复设置
-                if (window.__termsObserverActive) return;
-                window.__termsObserverActive = true;
-                
-                // 条款对话框的多种选择器（覆盖不同情况）
-                const termsSelectors = [
-                    'p.notranslate',
-                    '[role="dialog"]',
-                    '.mdc-dialog',
-                    '[aria-modal="true"]',
-                    '.terms-dialog',
-                    '.consent-dialog'
-                ];
-                
-                // 检查是否是条款对话框
-                const isTermsDialog = (element) => {
-                    if (!element) return false;
-                    const text = element.textContent?.toLowerCase() || '';
-                    const keywords = ['terms', 'agree', '条款', '同意', 'consent', 'accept'];
-                    return keywords.some(k => text.includes(k));
-                };
-                
-                // 检查函数 - 立即执行版本
-                const checkForTerms = () => {
-                    for (const selector of termsSelectors) {
-                        const elements = document.querySelectorAll(selector);
-                        for (const el of elements) {
-                            if (isTermsDialog(el) && el.offsetParent !== null) {
-                                // 找到可见的条款对话框，通过 console.log 通知 Python
-                                console.log('[TERMS_DETECTED]');
-                                return true;
-                            }
+            # 使用 add_init_script 确保在页面刷新或导航后脚本仍然生效
+            script = '''
+                (() => {
+                    const initObserver = () => {
+                        // 避免重复设置
+                        if (window.__termsObserverActive) return;
+                        
+                        // 确保 document.body 存在
+                        if (!document.body) {
+                            window.addEventListener('DOMContentLoaded', initObserver);
+                            return;
                         }
+
+                        window.__termsObserverActive = true;
+                        
+                        // 条款对话框的多种选择器（覆盖不同情况）
+                        const termsSelectors = [
+                            'p.notranslate',
+                            '[role="dialog"]',
+                            '.mdc-dialog',
+                            '[aria-modal="true"]',
+                            '.terms-dialog',
+                            '.consent-dialog'
+                        ];
+                        
+                        // 检查是否是条款对话框
+                        const isTermsDialog = (element) => {
+                            if (!element) return false;
+                            const text = element.textContent?.toLowerCase() || '';
+                            const keywords = ['terms', 'agree', '条款', '同意', 'consent', 'accept'];
+                            return keywords.some(k => text.includes(k));
+                        };
+                        
+                        // 检查函数 - 立即执行版本
+                        const checkForTerms = () => {
+                            for (const selector of termsSelectors) {
+                                const elements = document.querySelectorAll(selector);
+                                for (const el of elements) {
+                                    if (isTermsDialog(el) && el.offsetParent !== null) {
+                                        // 找到可见的条款对话框，通过 console.log 通知 Python
+                                        console.log('[TERMS_DETECTED]');
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        };
+                        
+                        // 立即检查一次
+                        checkForTerms();
+                        
+                        // 设置快速响应的 MutationObserver（无限流）
+                        const observer = new MutationObserver((mutations) => {
+                            // 直接检查，不限流
+                            // 使用 queueMicrotask 确保尽快执行但不阻塞
+                            queueMicrotask(checkForTerms);
+                        });
+                        
+                        // 观察整个文档的变化
+                        observer.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true,
+                            attributeFilter: ['class', 'style', 'hidden', 'aria-hidden']
+                        });
+                        
+                        console.log('[Terms Observer] 快速条款监听器已启动');
+                    };
+
+                    // 尝试初始化
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', initObserver);
+                    } else {
+                        initObserver();
                     }
-                    return false;
-                };
-                
-                // 立即检查一次
-                checkForTerms();
-                
-                // 设置快速响应的 MutationObserver（无限流）
-                const observer = new MutationObserver((mutations) => {
-                    // 直接检查，不限流
-                    // 使用 queueMicrotask 确保尽快执行但不阻塞
-                    queueMicrotask(checkForTerms);
-                });
-                
-                // 观察整个文档的变化
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['class', 'style', 'hidden', 'aria-hidden']
-                });
-                
-                console.log('[Terms Observer] 快速条款监听器已启动');
-            }''')
+                })();
+            '''
+            
+            # 使用 evaluate 立即执行
+            await self.page.evaluate(script)
+            
+            # 同时添加为 init script，确保导航/刷新后依然有效
+            # 注意：这可能会导致在同一个页面会话中重复添加（如果多次调用 start_monitoring）
+            # 但脚本内部有 check (window.__termsObserverActive) 避免重复执行
+            try:
+                await self.page.context.add_init_script(script)
+            except Exception:
+                # 忽略 context 相关的错误（例如 context 已关闭）
+                pass
             
             self._observer_active = True
             print("👁️ 条款监听器已启动 (快速响应)")
