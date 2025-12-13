@@ -344,10 +344,15 @@ class TermsHandler:
             # 首次立即检查
             handler = handler_weak_ref()
             if handler:
-                await handler.accept_terms_if_present()
+                try:
+                    await handler.accept_terms_if_present()
+                except Exception:
+                    pass
+                # 显式释放引用
+                del handler
             
             while True:
-                # 每次循环开始时解引用弱引用
+                # 每次循环开始时获取弱引用
                 handler = handler_weak_ref()
                 
                 # 检查引用有效性（对象已被回收则退出）
@@ -357,37 +362,60 @@ class TermsHandler:
                 # 检查运行状态
                 if running_check and not running_check():
                     break
-                    
+                
+                # 获取事件对象（不持有handler强引用）
+                event = handler._terms_detected_event
+                
+                # 显式释放handler引用，允许在await期间GC回收
+                del handler
+                
                 try:
-                    # 等待事件或超时（缩短超时时间）
+                    # 等待事件或超时
                     try:
-                        if not handler._terms_detected_event:
-                            break
-                            
                         await asyncio.wait_for(
-                            handler._terms_detected_event.wait(),
+                            event.wait(),
                             timeout=check_interval
                         )
-                        # 事件触发，重新获取引用并处理条款
+                        
+                        # 事件触发
+                        event.clear()
+                        
+                        # 重新获取引用处理条款
                         handler = handler_weak_ref()
-                        if handler is None:
-                            break
-                        handler._terms_detected_event.clear()
-                        await handler.accept_terms_if_present()
-                    except asyncio.TimeoutError:
-                        # 超时后进行一次快速主动检查
-                        handler = handler_weak_ref()
-                        if handler is None:
-                            break
-                        has_terms = await handler.check_terms_present()
-                        if has_terms:
+                        if handler:
                             await handler.accept_terms_if_present()
+                            del handler
+                        else:
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        # 超时后进行一次主动检查
+                        handler = handler_weak_ref()
+                        if handler:
+                            try:
+                                has_terms = await handler.check_terms_present()
+                                if has_terms:
+                                    await handler.accept_terms_if_present()
+                            except Exception as e:
+                                # 忽略页面已关闭的错误
+                                err_msg = str(e)
+                                if "Target crashed" in err_msg or "Session closed" in err_msg:
+                                    break
+                            finally:
+                                del handler
+                        else:
+                            break
+                            
                     except asyncio.CancelledError:
                         break
                             
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
+                    # 再次捕获外层可能的错误
+                    err_msg = str(e)
+                    if "Target crashed" in err_msg or "Session closed" in err_msg:
+                        break
                     print(f"⚠️ 条款监控出错: {e}")
                     await asyncio.sleep(0.5)
         
